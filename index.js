@@ -204,7 +204,7 @@ class LiverRhyme {
       // 从 peaks 中查找是否有峰值采样点和当前采样点相差设定毫秒内间距.
       // 如果是则认为是节拍位.
       // 当前我取值为 100 ms.
-      const CHECK_DEVIATION = 10
+      const CHECK_DEVIATION = 100
       if (this.peaks.filter(item => Math.abs(item.position - currentPosition) < (this.audioSampleRate / 1000 * CHECK_DEVIATION)).length) {
         console.log(true)
         isBeatNode.innerHTML = true
