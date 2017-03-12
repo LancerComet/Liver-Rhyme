@@ -2,7 +2,7 @@
  *  Get beats from an audio file By LancerComet at 1:03, 2017/3/11.
  *  # Carry Your World #
  *  ---
- *  从音频文件中大体提取音乐节拍.
+ *  从音频文件中大体提取音乐节拍与 BPM.
  *
  *  生成两个 AudioContext，一个作为播放上下文，一个作为分析上下文.
  *  将传入的音频文件转换为 AudioBuffer 送入这两个上下文中.
@@ -19,6 +19,8 @@
  *  经过以上节点得出 renderedAudioBuffer，获取其中的声道数据后送入 getPeaks 函数中提取出峰值音量所在的 position（采样点位置）.
  *
  *  然后在播放过程中获取当前的时间轴，匹配峰值位即可.
+ * 
+ *  之后，可将获得的 peaks 放入 getPeakIntervals 函数中获取 peak 之间的间隔统计，从而得出 bpm 统计值.
  */
 
 class LiverRhyme {
@@ -33,6 +35,7 @@ class LiverRhyme {
     this.audioSampleRate = null  // 音频文件的采样率.
 
     this.peaks = []  // 峰值信息.
+    this.bpm = 0  // BPM.
   }
 
   /**
@@ -149,9 +152,19 @@ class LiverRhyme {
 
     audioContext.startRendering().then(renderedAudioBuffer => {
       this.peaks = getPeaks([renderedAudioBuffer.getChannelData(0), renderedAudioBuffer.getChannelData(1)], this.audioSampleRate)
-      // const peakIntervals = getPeakIntervals(peaks)
-      // console.log(peakIntervals)
+      
+      const peakIntervals = getPeakIntervals(this.peaks, this.audioSampleRate)
+      peakIntervals.sort((a, b) => b.count - a.count)
 
+      let avgBpm = peakIntervals[0].tempo
+      // if (peakIntervals.length > 2) {
+      //   avgBpm = (peakIntervals[0].tempo + peakIntervals[1].tempo + peakIntervals[2].tempo) / 3
+      // } else {
+      //   avgBpm = peakIntervals[0].tempo
+      // }
+
+      this.bpm = avgBpm
+      
       if (this.config.autoPlay) {
         this.play()
       }
@@ -194,6 +207,9 @@ class LiverRhyme {
        ---
        值为整数，用于指定输出node的声道的数量，默认值是2，最高能取32.
      */
+    const shapes = []
+    let currentShape = 0
+
     const scriptNode = playingContext.createScriptProcessor()
     scriptNode.onaudioprocess = event => {
       const playbackTime = Math.floor(event.timeStamp) / 1000  // 当前播放时间（秒），向下取整.
@@ -204,13 +220,33 @@ class LiverRhyme {
       // 从 peaks 中查找是否有峰值采样点和当前采样点相差设定毫秒内间距.
       // 如果是则认为是节拍位.
       // 当前我取值为 100 ms.
-      const CHECK_DEVIATION = 100
+      const CHECK_DEVIATION = 80
       if (this.peaks.filter(item => Math.abs(item.position - currentPosition) < (this.audioSampleRate / 1000 * CHECK_DEVIATION)).length) {
-        console.log(true)
         isBeatNode.innerHTML = true
         isBeatNode.style.color = 'green'
+
+        if (shapes.length > 100) {
+          shapes[currentShape].replay()
+          currentShape++
+
+          if (currentShape > 100) {
+            currentShape = 0
+          }
+        } else {
+          shapes.push(
+            new mojs.Shape({
+              shape:    'circle', // <--- shape of heart is now available!
+              fill:     'none',
+              stroke:   'red',
+              scale:    { 0 : 4 },
+              strokeWidth: { 50 : 0 },
+              y:         -20,
+              duration:  1000,
+            }).play()
+          )
+        }
+
       } else {
-        console.log(false)
         isBeatNode.innerHTML = false
         isBeatNode.style.color = 'red'
       }
@@ -239,6 +275,10 @@ class LiverRhyme {
    */
   play () {
     this.playSourceNode.start(0)
+
+    const bpmNode = document.querySelector('#bpm')
+    bpmNode.innerHTML = this.bpm
+
     console.log('Play.')
   }
 }
@@ -256,13 +296,13 @@ const newAudio = new LiverRhyme('#audio-selector', {
  * @return {Array}
  */
 function getPeaks (channelData, sampleRate = 22050) {
-  console.log(channelData)
   // 本函数在这里查询给定的 channelData 中音量最大的位置，以作为节拍依据.
 
   // 我们将把音乐按照 0.5 秒分为若干份，然后在若干份内进行查询，所以一个峰值前后会间隔 0.5 秒至少.
   // 默认采样率为 22050，即 44100 的一半（0.5 秒）.
 
-  // 这样其实是一个定 bpm 的采样方式.
+  // 这样其实是一个定采样方式, 即每个 0.5 秒内必有一个峰值.
+  // 然后可根据峰值间隔获取 bpm.
 
   // What we're going to do here, is to divide up our audio into parts.
   // We will then identify, for each part, what the loudest sample is in that part.
@@ -304,7 +344,7 @@ function getPeaks (channelData, sampleRate = 22050) {
  * @param {Array<Object>} peaks
  * @return {Array}
  */
-function getPeakIntervals (peaks) {
+function getPeakIntervals (peaks, sampleRate) {
 
   // What we now do is get all of our peaks, and then measure the distance to
   // other peaks, to create intervals.  Then based on the distance between
@@ -314,31 +354,30 @@ function getPeakIntervals (peaks) {
   // The interval that is seen the most should have the BPM that corresponds
   // to the track itself.
 
-  var groups = [];
+  const groups = []
 
-  peaks.forEach(function (peak, index) {
-    for (var i = 1; (index + i) < peaks.length && i < 10; i++) {
-      var group = {
-        tempo: (60 * 44100) / (peaks[index + i].position - peak.position),
+  peaks.forEach((peak, index) => {
+    for (let i = 1; (index + i) < peaks.length && i < 10; i++) {
+      const group = {
+        tempo: (60 * sampleRate) / (peaks[index + i].position - peak.position),
         count: 1
-      };
+      }
 
       while (group.tempo < 90) {
-        group.tempo *= 2;
+        group.tempo *= 2
       }
 
       while (group.tempo > 180) {
-        group.tempo /= 2;
+        group.tempo /= 2
       }
 
-      group.tempo = Math.round(group.tempo);
+      group.tempo = Math.round(group.tempo)
 
-      if (!(groups.some(function(interval) {
-          return (interval.tempo === group.tempo ? interval.count++ : 0);
-        }))) {
-        groups.push(group);
+      if (!(groups.some(interval => interval.tempo === group.tempo ? interval.count++ : 0))) {
+        groups.push(group)
       }
     }
-  });
-  return groups;
+  })
+
+  return groups
 }
